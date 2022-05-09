@@ -1,0 +1,456 @@
+- `tx`(Transaction) (Sending procedure)
+  - Sending is equal to generate `tx`
+    - `tx` consist of
+      - Version
+      - Inputs
+      - Outputs
+      - Locktime
+        - The earliest time a transaction can be added to the block chain
+    - Each transaction need at least one input and one output, so sender have to generate them
+    - Each input spends the satoshis paid to a previous output
+    - Each output waits as an UTXO until a later input spends it
+  - Sender and reciepient have to generate `pubKey` and `privKey` pair with ECDSA
+  - Reciepient have to expose his address to sender
+    - Reciepient's address
+      - address = BASE58CHECK(`pubKeyHash`)
+        - `pubKeyHash` = RIPEMD160(SHA256(`pubKey`)) (reciepient's)
+        - `BASE58CHECK` : BASE58ENCODE(`version` + `pubKeyHash` + `checksum`)
+          - `version`(1bytes)
+            - P2PKH : 0
+            - P2SH : 5
+            - P2PKH(Test) : 111
+            - P2SH(Test) : 196
+          - `keyHash`(21bytes) = `version` + `pubKeyHash`(20bytes)
+          - `checksum`(4bytes) = SHA256(SHA256(`keyHash`))[...4byte]
+  - Sender have to create transaction input
+    - Transaction input consist of
+      - Transaction identifier(`txId`) of previous transaction
+      - Output index of previous transaction(`idx`)
+      - Sequence number
+      - Signature script(`scriptSig`)
+        - `scriptSig` is the unlocking script
+        - `scriptSig` = `sig`, `pubKey` (sender's)
+        - `pubKey` : sender's public key created by ECDSA
+        - `sig` = Sign(SHA256(`data`), sender's `privKey`)
+        - `data`
+          - In essense, the entire transaction is signed except for any signature scripts
+            - previous `txId`
+            - `idx`
+            - previous output's `scriptPubKey`
+            - new `scriptPubKey`
+            - `amount` of satoshis to be sent
+  - Sender have to create a transaction output
+    - Transaction output consist of
+      - Implied index number(`idx`)
+      - `amount` of satoshis to be sent
+      - Pubkey script(`scriptPubKey`)
+        - P2PKH(Pay to public key hash)
+          - `scriptPubKey`(locking script) = `OP_DUP` `OP_HASH160` `pubKeyHash` `OP_EQUALVERIFY` `OP_CHECKSIG`
+            - `pubKeyHash` in `scriptPubKey` is from reciepient's `pubKey`
+        - P2SH(Pay to script hash)
+          - `scriptPubKey`(locking script) = `OP_HASH160` `scriptHash` `OP_EQUAL`
+            - `scriptHash` is `pubKeyHash` containing a hash of `redeemScript`
+  - Validation (between output of previous transaction and input of current transaction)
+    - P2PKH(Pay to public key hash)
+      - `scriptPubKey`(locking script) = `OP_DUP` `OP_HASH160` `pubKeyHash` `OP_EQUALVERIFY` `OP_CHECKSIG`
+      - `scriptSig`(unlocking script) = `sig` `pubKey`
+      - Flow
+        - Sender's `sig` is pushed to stack (stack : `sig`)
+        - Sender's `pubKey` is pushed to stack (stack : `sig`, `pubKey`)
+        - Perform `OP_DUP` from `scriptPubKey`
+          - Sender's `pubKey` is pushed to stack (stack : `sig`, `pubKey`, `pubKey`)
+        - Perform `OP_HASH160` from `scriptPubKey`
+          - Consuming `pubKey`, `pubKeyHash` is calculated and pushed to stack (stack : `sig`, `pubKey`, `pubKeyHash`)
+          - `pubKeyHash` = RIPEMD160(SHA256(`pubKey`))
+        - `pubKeyHash` is pushed to stack from `scriptPubKey` (stack : `sig`, `pubKey`, `pubKeyHash`, `pubKeyHash`)
+        - Perform `OP_EQUALVERIFY` from `scriptPubKey`
+          - `OP_EQUALVERIFY` is equivalent to `OP_EQUAL`, `OP_VERIFY` (stack : `sig`, `pubKey`)
+          - `OP_EQUAL`
+            - Consuming two `scriptPubKey`, check if `pubKeyHash` from sender and `scriptPubKey` is same,  and if two are same stack 1, otherwise stack 0 (stack : `sig`, `pubKey`, 0 or 1)
+                - `pubKeyHash` from `scriptPubKey` is generated from previous transaction, and passed as a address
+                - So, this procedure checks if reciepient of previous transaction and sender of current transaction is same
+          - `OP_VERIFY`
+            - If value at the top of stack is 1, it pops that value off the stack, otherwise, it immediately terminates evaluation and transaction validation fails (stack : `sig`, `pubKey`, 0 or 1)
+        - Perform `OP_CHECKSIG` from `scriptPubKey`
+          - Consuming both `sig` and `pubKey`, check if `sig` matches `pubKey`, and decrypted `sig` is same as `data`, and if both check passed stack 1, otherwise stack 0 (stack : 0 or 1)
+        - If top of the stack is not 0, transaction is valid
+
+    - P2SH(Pay to script hash)
+      - `scriptPubKey`(locking script) = `OP_HASH160` `scriptHash` `OP_EQUAL`
+        - `scriptHash` = RIPEMD160(SHA256(`redeemScript`))
+          - `redeemScript` : P2MS(Pay to multisig) scriptPubKey(locking script) itself
+      - `scriptSig`(unlocking script) = `OP_0` `sigA` `sigB` `redeemScript`
+      - `redeemScript` = `OP_M`(number of `sig`s) `pubKeyA` `pubKeyB` `pubKeyC` `OP_N`(number of `pubKey`s) `OP_CHECKMULTISIG`
+      - Flow
+        - Standard execution
+          - The `redeemScript` is hashed, and is then checked that if it is equal to `scriptHash` in the `scriptPubKey`
+        - Redeem script execution
+          - The `redeemScript` is deserialized and ran as if it were a `pubKeyScript`
+
+- `block`
+  - `block` consist of
+    - `magicNum`(uint32_t : 4bytes)
+      - main : `0xD9B4BEF9`
+      - testnet/regtest : `0xDAB5BFFA`
+      - testnet3 : `0x0709110B`
+      - signet : `0x40CF030A`
+      - namecoin : `0xFEB4BEF9`
+    - `blockSize`(4bytes)
+    - `header`(80bytes)
+      - `header` consist of
+        - `version`(int32_t : 4bytes)
+          - version of bitcoin
+        - `prevBlock`(char[32] : 32bytes)
+          - Hash of previous block
+          - Hash algorithm is `dHash`(double SHA256)
+        - `merkleRoot`(char[32]	: 32bytes)
+          - Root hash of the Merkle tree
+          - Hash algorithm is `dHash`(double SHA256)
+        - `timestamp`(uint32_t : 4bytes)
+          - Timestamp of block creation
+        - `bits`(uint32_t : 4bytes)
+          - Mining difficulty
+        - `nonce`(uint32_t : 4bytes)
+          - Variable of PoW
+    - `txCount`(`varInt`)
+      - The number of transactions provided
+    - `txs`(`tx`[])
+      - The transactions provided
+
+- P2P Network
+  - `msg`
+    - `msg` = `magic` + `command` + `length` + `checksum` + `payload`
+      - `magic`(uint32_t) : Magic value indicating message origin network, and used to seek to next message when stream state is unknown
+      - `command`(char[12]) : ASCII string identifying the packet content, NULL padded (non-NULL padding results in packet rejected)
+      - `length`(uint32_t) : Length of payload in number of bytes
+      - `checksum`(uint32_t) : SHA256(SHA256(`payload`))[...4bytes]
+      - `payload`(uchar[]) : The actual data
+    - custom encodings
+      - `varInt`
+        - Integers are encoded as `varInt` to reduce the storage occupation
+        - 0 <= i <= 0xFC : uint8_t
+        - 0xFC < i <= 0xFFFF(2byte) : `0xFD`uint16_t
+        - 0xFFFF < i <= 0xFFFFFFFF(4byte) : `0xFE`uint32_t
+        - 0xFFFFFFFF < i <= 0xFFFFFFFFFFFFFFFF(8byte) : `0xFF`uint64_t
+      - `varStr`
+        - Strings are encoded as `varStr` to indicate the length of string
+        - `varStr` = length(`varInt`) + string(char[])
+      - `netAddr`
+        - `time` + `services` + `iP` + `port`
+          - `time`(uint32) : The time, not present in version message
+          - `services`(uint64_t) : Same service listed in version
+          - `iP`(char[16]) : IPv6 address, for IPv4 address, IPv4-mapped IPv6 addresses are applied (12 bytes 00 00 00 00 00 00 00 00 00 00 FF FF, followed by the 4 bytes of the IPv4 address)
+          - `port`(uint16_t) : port number, network byte order(big endian)
+      - `invVec` : response to a `inv` message
+        - `invVec`s are used for notifying other nodes about they have or data which is being requested
+        - `type` + `hash`
+          - `type`(uint32_t) : Identifies the object type linked to this inventory
+            - 0 : Error - Any data of with this number may be ignored
+            - 1 : MSG_TX - Hash is related to a transaction
+            - 2 : MSG_BLOCK - Hash is related to a data block
+            - 3 : MSG_FILTERED_BLOCK - Hash of a block header; identical to MSG_BLOCK, Only to be used in getdata message, Indicates the reply should be a merkleblock message rather than a block message; this only works if a bloom filter has been set
+            - 4 : MSG_CMPCT_BLOCK - Hash of a block header; identical to MSG_BLOCK, Only to be used in getdata message, Indicates the reply should be a cmpctblock message
+            - 0x40000001 : MSG_WITNESS_TX - Hash of a transaction with witness data
+            - 0x40000002 : MSG_WITNESS_BLOCK - Hash of a block with witness data
+            - 0x40000003 : MSG_FILTERED_WITNESS_BLOCK - Hash of a block with witness data, Only to be used in getdata message, Indicates the reply should be a merkleblock message rather than a block message; this only works if a bloom filter has been set
+          - `hash`(char[32]) : Hash of the object
+      - `blockHeader` : response to a `getHeaders` message
+        - `version` + `prevBlock` + `merkleRoot` + `timestamp` + `bits` + `nonce` + `txnCount`
+          - `version`(int32_t) : Block version information (Note that it is signed)
+          - `prevBlock`(char[32]) : The hash value of the previous block this particular block references
+          - `merkleRoot`(char[32]) : The reference to a Merkle tree collection which is a hash of all transactions related to this block
+          - `timestamp`(uint32_t) : A timestamp recording when this block was created
+          - `bits`(uint32_t) : The calculated difficulty target being used for this block
+          - `nonce`(uint32_t) : The nonce used to generate this block, to allow variations of the header and compute different hashes
+          - `txn_count`(varInt) : Number of transaction entries, this value is always 0
+    - types
+      - `ver`
+        - Purpose
+          - To make connection between peers, message for handshaking
+          - It acts like SYN in TCP 3 way handshake
+        - Request
+          - No request : Advertisement to setup outgoing connection
+          - `ver`
+        - Response
+          - If `ver` is sent as advertisement, `ver` will be sent as response from live remote peer
+          - `verAck` will always be sent as response
+        - Payload
+          - `version` + `services` + `timestamp` + `addrRecv` + `addrFrom` + `nonce` + `userAgent` + `startHeight` + `relay`
+            - `version`(int32_t) : Identifies protocol version being used by the node
+            - `services`(uint64_t) : bitfield of features to be enabled for this connection
+            - `timestamp`(int64_t) : standard UNIX timestamp in seconds
+            - `addrRecv`(`netAddr`) : The network address of the node receiving this message
+            - `addrFrom`(`netAddr`) : Field can be ignored. This used to be the network address of the node emitting this message, but most P2P implementations send 26 dummy bytes. The "services" field of the address would also be redundant with the second field of the version message.
+            - `nonce`(uint64_t) : Node random nonce, randomly generated every time a version packet is sent. This nonce is used to detect connections to self
+            - `userAgent`(`varStr`) : Version information of user agent (ex : /BitcoinJ:0.2(iPad; U; CPU OS 3_2_1)/AndroidBuild:0.8/)
+            - `startHeight`(int32_t) : The last block received by the emitting node -> If it's shorter than opponent's `startHeight`, request for absent blocks and download them
+            - `relay`(bool) : Whether the remote peer should announce relayed transactions or not
+        - Features
+          - When a node creates an outgoing connection, it will immediately advertise its version
+          - The remote node will respond with its version
+      - `verAck`
+        - Purpose
+          - To make connection between peers, message for handshaking
+          - It acts like ACK in TCP 3 way handshake
+        - Request
+          - `ver`
+        - Response
+          - No response
+        - Payload
+          - Empty
+        - Features
+          - The verack message is sent in reply to version. This message consists of only a message header with the command string "verAck"
+      - `addr`
+        - Purpose
+          - To provide information of address
+        - Request
+          - `getAddr`
+        - Response
+          - No response
+        - Payload
+          - `count` + `addrList`
+            - `count`(`varInt`) : Number of address entries (max: 1000)
+            - `addrList`((uint32_t + `netAddr`)[]) : Address of other nodes on the network; Timestamp + `netAddr`
+        - Features
+          - Provide information on known nodes of the network
+          - Non-advertised nodes should be forgotten after typically 3 hours
+      - `inv`
+        - Purpose
+          - To provide object information to peer
+        - Request
+          - No request : Announce of new transactions or blocks
+          - `getBlocks`
+          - `memPool`
+        - Response
+          - `getData`
+        - Payload
+          - `count` + `inventory`
+            - `count`(`varInt`) : Number of inventory entries
+            - `inventory`(`invVec`) : Inventory vectors
+        - Features
+          - Allows a node to advertise its knowledge of one or more objects
+          - It can be received unsolicited, or in reply to `getBlocks`
+      - `getData`
+        - Purpose
+          - To retrieve the content of a specific object
+        - Request
+          - `inv`
+        - Response
+          - `block`
+          - `tx`
+          - `notFound`
+        - Payload
+          - `count` + `inventory`
+            - `count`(`varInt`) : Number of inventory entries
+            - `inventory`(`invVec`) : Inventory vectors
+        - Features
+          - Used in response to `inv`, to retrieve the content of a specific object, and is usually sent after receiving an `inv` packet, after filtering known elements
+          - It can be used to retrieve `tx`, but only if they are in the memory pool or relay set - arbitrary access to transactions in the chain is not allowed to avoid having clients start to depend on nodes having full transaction indexes (which modern nodes do not)        
+      - `notFound`
+        - Purpose
+          - To let peer to know that requested data item could not be relayed
+        - Request
+          - `getData`
+        - Response
+          - No response
+        - Payload
+          - `count` + `inventory`
+            - `count`(`varInt`) : Number of inventory entries
+            - `inventory`(`invVec`) : Inventory vectors
+        - Features
+          - Response to a `getData`, sent if any requested data items could not be relayed, for example, because the requested transaction was not in the memory pool or relay set
+      - `getBlocks`
+        - Purpose
+          - To get information of unknown new blocks
+        - Request
+          - No request
+        - Response
+          - `inv`
+        - Payload
+          - `version` + `hashCount` + `blockLocatorHashes` + `hashStop`
+            - `version`(uint32_t) : The protocol version
+            - `hashCount`(`varInt`) : Number of block locator hash entries
+            - `blockLocatorHashes`(char[32]) : block locator object; newest back to genesis block (dense to start, but then sparse)
+              - Iteratively pushes from hash of`topHeight` toward `genesisBlock`
+              - First 10 hashes are pushed by step size 1, then the step doubles each loop
+              - Pushed hash index example : [99, 98, ..., 90, 88, 84, 76, 60, 28, 0]
+            - `hashStop`(char[32]) : hash of the last desired block; set to zero to get as many blocks as possible (500)
+        - Features
+          - Return an `inv` packet containing the list of blocks starting right after the last known hash in the `blockLocatorHashes`, up to `hashStop` or 500 blocks, whichever comes first
+          - The `blockLocatorHashes` are processed by a node in the order as they appear in the message; If a block hash is found in the node's main chain, the list of its children is returned back via the `inv` message and the remaining locators are ignored, no matter if the requested limit was reached, or not
+          - To receive the next blocks hashes, one needs to issue `getBlocks` again with a new `blockLocatorHashes`; Keep in mind that some clients may provide blocks which are invalid if the `blockLocatorHashes` contains a hash on the invalid branch
+      - `getHeaders`
+        - Purpose
+          - To get information of unknown new block headers
+        - Request
+          - No request
+        - Response
+          - `headers`
+        - Payload
+          - `version` + `hashCount` + `blockLocatorHashes` + `hashStop`
+            - `version`(uint32_t) : The protocol version
+            - `hashCount`(`varInt`) : Number of block locator hash entries
+            - `blockLocatorHashes`(char[32]) : block locator object; newest back to genesis block (dense to start, but then sparse)
+              - Iteratively pushes from hash of `topHeight` toward `genesisBlock`
+              - First 10 hashes are pushed by step size 1, then the step doubles each loop
+              - Pushed hash index example : [99, 98, ..., 90, 88, 84, 76, 60, 28, 0]
+            - `hashStop`(char[32]) : hash of the last desired block; set to zero to get as many blocks as possible (2000)
+        - Features
+          - Return a headers packet containing the headers of blocks starting right after the last known hash in the block locator object, up to hash_stop or 2000 blocks, whichever comes first
+          - To receive the next block headers, one needs to issue getHeaders again with a new block locator object; Keep in mind that some clients may provide headers of blocks which are invalid if the block locator object contains a hash on the invalid branch
+      - `tx`
+        - Purpose
+          - To provide transaction information to peer
+        - Request
+          - `getData`
+        - Response
+          - No response
+        - Payload
+          - `version` + `flag` + `txInCount` + `txIn` + `txOutCount` + `txOut` + `txWitnesses` + `lockTime`
+            - `version`(uint32_t) : Transaction data format version
+            - `flag`(optional, unit8_t) : If present, always 0001, and indicates the presence of witness data
+            - `txInCount`(`varInt`) : Number of Transaction inputs (never zero)
+            - `txIn`(`txIn`[]) : A list of 1 or more transaction inputs or sources for coins
+              - `prevOut`(`outPoint`) : The previous output transaction reference, as an OutPoint structure
+                - `outPoint`
+                - `hash`(char[32]) : The hash of the referenced transaction
+                - `idx`(uint32_t) : The index of the specific output in the transaction; The first output is 0, etc
+              - `scriptLength`(`varInt`) : The length of the signature script
+              - `scriptSig`(uchar[]) : Computational Script for confirming transaction authorization
+              - `seq`(uint32_t) : Transaction version as defined by the sender; Intended for "replacement" of transactions when information is updated before inclusion into a block
+            - `txOutCount`(`varInt`) : Number of Transaction outputs
+            - `txOut`(`txOut`[]) : A list of 1 or more transaction outputs or destinations for coins
+              - `value`(int64_t) : Transaction Value
+              - `scriptPubKeyLen`(`varInt`) : Length of the `scriptPubKey`
+              - `scriptPubKey`(uchar[]) : Usually contains the public key as a Bitcoin script setting up conditions to claim this output
+            - `txWitnesses`(`txWitness`[]) : A list of witnesses, one for each input; omitted if flag is omitted above
+            - `lockTime`(uint32_t) : The block number or timestamp at which this transaction is unlocked
+              - 0 : Not locked
+              - < 500M : Block number at which this transaction is unlocked
+              - >= 500M : UNIX timestamp at which this transaction is unlocked
+              - uint32_t covers to 4G
+              - If all `txIn` inputs have final (0xffffffff) sequence numbers then `lockTime` is irrelevant. Otherwise, the transaction may not be added to a block until after `lockTime`
+              - It acts like below : 
+                - `seq` of `txIn` starts from 0
+                - Every time transaction is overwritten, `seq` of `txIn` gains
+                - If transaction is finalized, `seq` = UInt32.MaxValue, and it will be added to block, even if `lockTime` has not been reached
+                - Else, transaction will be added to block when `lockTime` reached
+                - Transaction overwriting is not used currently, so `lockTime` = 0 `seq` = UInt32.MaxValue
+        - Features
+          - `tx` describes a bitcoin transaction, in reply to `getData`
+          - When a bloom filter is applied tx objects are sent automatically for matching transactions following the merkleblock
+      - `block`
+        - Purpose
+          - To provide block information to peer
+        - Request
+          - `getData`
+        - Response
+          - No response
+        - Payload
+          - `version` + `prevBlock` + `merkleRoot` + `timestamp` + `bits` + `nonce` + `txCount` + `txs`
+            - `version`(int32_t : 4bytes) : version of bitcoin
+            - `prevBlock`(char[32] : 32bytes) : Hash of previous block
+              - Hash algorithm is `dHash`(double SHA256)
+            - `merkleRoot`(char[32]	: 32bytes) : Root hash of the Merkle tree
+              - Hash algorithm is `dHash`(double SHA256)
+            - `timestamp`(uint32_t : 4bytes) : Timestamp of block creation
+            - `bits`(uint32_t : 4bytes) : Mining difficulty
+            - `nonce`(uint32_t : 4bytes) : Variable of PoW
+            - `txCount`(`varInt`) : The number of transactions provided
+            - `txs`(`tx`[]) : The transactions provided
+        - Features
+          - The block message is sent in response to a `getData` message which requests transaction information from a block hash
+      - `headers`
+        - Purpose
+          - To provide block header information to peer
+        - Request
+          - `getHeaders`
+        - Response
+          - No response
+        - Payload
+          - `count` + `headers`
+            - `count`(`varInt`) : Number of block headers
+            - `headers`(`blockHeader`[]) : Block headers
+        - Features
+          - The headers packet returns block headers in response to a `getHeaders` packet
+      - `getAddr`
+        - Purpose
+          - Asking for information about known active peers to help with finding potential nodes in the network
+        - Request
+          - No request
+        - Response
+          - `addr`
+        - Payload
+          - Empty
+        - Features
+          - No additional data is transmitted with this message
+          - The response to receiving this message is to transmit one or more `addr` messages with one or more peers from a database of known active peers
+          - The typical presumption is that a node is likely to be active if it has been sending a message within the last three hours
+      - `mempool`
+        - Purpose
+          - Asking for information about transactions it has verified but which have not yet confirmed
+        - Request
+          - No request
+        - Response
+          - `inv`
+        - Payload
+          - Empty
+        - Features
+          - The response to receiving this message is an inv message containing the transaction hashes for all the transactions in the node's mempool
+      - `ping`
+        - Purpose
+          - To confirm that the TCP/IP connection is still valid
+        - Request
+          - No request
+        - Response
+          - `pong`
+        - Payload
+          - `nonce`(uint64_t)
+            - Random nonce
+        - Features
+          - An error in transmission is presumed to be a closed connection and the address is removed as a current peer
+      - `pong`
+        - Purpose
+          - Response to ping, to inform receiver is valid to sender
+        - Request
+          - `ping`
+        - Response
+          - No response
+        - Payload
+          - `nonce`(uint64_t)
+            - `nonce` from `ping`
+        - Features
+          - Its `nonce` is same as the `nonce` from `ping`
+      - `reject`
+        - Purpose
+          - To let peer to know that the message of peer has been rejected
+        - Request
+          - Various type of messages
+        - Response
+          - No response
+        - Payload
+          - `message` + `ccode` + `reason` + `data`
+          - `message`(`varStr`)
+            - Type of message rejected
+          - `ccode`
+            - Code relating to rejected message
+            - 0x01 : REJECT_MALFORMED
+            - 0x10 : REJECT_INVALID
+            - 0x11 : REJECT_OBSOLETE
+            - 0x12 : REJECT_DUPLICATE
+            - 0x40 : REJECT_NONSTANDARD
+            - 0x41 : REJECT_DUST
+            - 0x42 : REJECT_INSUFFICIENTFEE
+            - 0x43 : REJECT_CHECKPOINT
+          - `reason`
+            - Text version of reason for rejection
+          - `data`
+            - Optional extra data provided by some errors
+            - Currently, all errors which provide this field fill it with the `txId` or block header hash of the object being rejected, so the field is 32 bytes
+        - Features
+          - The reject message is sent when messages are rejected
+      - Messages related to bloom filter will be handled after simple implementation
+        - `filterLoad`
+        - `filterAdd`
+        - `filterClear`
+        - `merkleBlock`
